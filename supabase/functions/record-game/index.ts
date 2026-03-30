@@ -2,6 +2,7 @@ import "@supabase/functions-js/edge-runtime.d.ts"
 import postgres from "npm:postgres"
 
 const sql = postgres(Deno.env.get("POSTGRES_URL")!, { ssl: "require" })
+const APP_SECRET = Deno.env.get("APP_SECRET")!
 
 interface GamePayload {
   played_at: string
@@ -19,6 +20,13 @@ interface GamePayload {
 Deno.serve(async (req) => {
   if (req.method !== "POST") {
     return new Response("Method Not Allowed", { status: 405 })
+  }
+
+  if (req.headers.get("X-App-Secret") !== APP_SECRET) {
+    return new Response(JSON.stringify({ error: "Forbidden" }), {
+      status: 403,
+      headers: { "Content-Type": "application/json" },
+    })
   }
 
   let payload: GamePayload
