@@ -20,6 +20,7 @@ npx supabase login --token <access_token>
 ```bash
 npx supabase functions deploy record-game
 npx supabase functions deploy get-games
+npx supabase functions deploy notify-entry
 ```
 
 ### Secrets 관리
