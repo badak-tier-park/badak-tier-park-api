@@ -5,6 +5,7 @@ const sql = postgres(Deno.env.get("POSTGRES_URL")!, { ssl: "require" })
 const APP_SECRET = Deno.env.get("APP_SECRET")!
 
 interface GamePayload {
+  discord_id: number
   played_at: string
   map_name: string
   game_duration_seconds: number
@@ -40,7 +41,7 @@ Deno.serve(async (req) => {
   }
 
   const required = [
-    "played_at", "map_name", "game_duration_seconds",
+    "discord_id", "played_at", "map_name", "game_duration_seconds",
     "winner_name", "winner_race", "loser_name", "loser_race",
     "winner_apm", "loser_apm", "replay_file",
   ]
@@ -53,16 +54,19 @@ Deno.serve(async (req) => {
     }
   }
 
+  const seasons = await sql`SELECT id FROM seasons ORDER BY id DESC LIMIT 1`
+  const seasonId: number | null = seasons.length > 0 ? seasons[0].id : null
+
   try {
     await sql`
       INSERT INTO games
-        (played_at, map_name, game_duration_seconds,
+        (discord_id, played_at, map_name, game_duration_seconds,
          winner_name, winner_race, loser_name, loser_race,
-         winner_apm, loser_apm, replay_file)
+         winner_apm, loser_apm, replay_file, season_id)
       VALUES
-        (${payload.played_at}, ${payload.map_name}, ${payload.game_duration_seconds},
+        (${payload.discord_id}, ${payload.played_at}, ${payload.map_name}, ${payload.game_duration_seconds},
          ${payload.winner_name}, ${payload.winner_race}, ${payload.loser_name}, ${payload.loser_race},
-         ${payload.winner_apm}, ${payload.loser_apm}, ${payload.replay_file})
+         ${payload.winner_apm}, ${payload.loser_apm}, ${payload.replay_file}, ${seasonId})
       ON CONFLICT (replay_file) DO NOTHING
     `
   } catch (e) {
