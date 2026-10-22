@@ -39,7 +39,7 @@
 ## 커밋 전 검증
 테스트는 없다. 함수 디렉토리마다 타입 검사가 통과해야 커밋한다(각 `deno.json`의 import map을 쓰므로 그 디렉토리에서 실행):
 ```
-cd supabase/functions && for d in */; do (cd "$d" && deno check index.ts) || break; done
+cd supabase/functions && for d in */; do (cd "$d" && deno check --no-lock index.ts) || break; done
 ```
 
 ## GitHub 작업 규칙
