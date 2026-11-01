@@ -405,3 +405,10 @@ entrypoint = "./functions/record-game/index.ts"
 # Specifies static files to be bundled with the function. Supports glob patterns.
 # For example, if you want to serve static HTML pages in your function:
 # static_files = [ "./functions/record-game/*.html" ]
+
+# notifications insert 트리거(pg_net)가 부른다. JWT 대신 x-push-secret(DB Vault 값)으로 인증한다
+[functions.send-push]
+enabled = true
+verify_jwt = false
+import_map = "./functions/send-push/deno.json"
+entrypoint = "./functions/send-push/index.ts"

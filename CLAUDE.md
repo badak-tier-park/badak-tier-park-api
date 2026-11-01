@@ -9,6 +9,7 @@
 | `record-game` | gg-tracker (`/functions/v1/record-game`) | 리플레이 전적을 `games`에 기록. 가장 최근 시즌(`seasons` 최대 id)에 붙인다 |
 | `get-games` | gg-tracker 대시보드 | 전적 조회 |
 | `notify-entry` | badak-web 엔트리 제출(`src/lib/notifications.ts`) | 디스코드 웹훅으로 알림. 실패해도 웹은 사용자에게 알리지 않는다 |
+| `send-push` | DB 트리거 `notify_push`(`notifications` insert 시 `pg_net`) | 웹 푸시 발송. JWT 대신 `x-push-secret`으로 인증(`verify_jwt = false`). 알림 내용은 요청이 아니라 DB에서 읽는다 |
 
 - **요청·응답 형식을 바꾸면 호출하는 쪽이 같이 바뀌어야 한다.** gg-tracker는 사용자가 받아 둔 실행 파일이라
   옛 버전이 계속 호출한다 — 필드를 빼거나 이름을 바꾸지 말고 추가만 하거나, 옛 형식도 받게 둔다
@@ -33,6 +34,8 @@
 - `main`에 병합해도 자동 배포되지 않는다. Supabase CLI로 **개발(`badak-dev`) → 운영(`badak`) 순서로 양쪽 모두** 올린다
   (`npx supabase functions deploy <함수> --project-ref <ref>`, ref는 Supabase MCP `list_projects`로 조회 — 문서에 쓰지 않는다)
 - 함수 시크릿(`POSTGRES_URL`, `APP_SECRET`, `DISCORD_WEBHOOK_URL`)은 프로젝트마다 따로 `supabase secrets set`으로 둔다.
+  `send-push`는 함수 시크릿을 쓰지 않는다 — 웹훅 비밀값·VAPID 키는 DB Vault에 있고 service_role 전용 RPC
+  (`get_push_config`)로 읽는다. VAPID 키는 첫 실행 때 함수가 만든다(배포 후 `GET /functions/v1/send-push`로 생성·확인)
   `APP_SECRET`은 gg-tracker 빌드에 들어가는 값과 같아야 한다
 - 배포했으면 "확인했다"가 아니라 실제 호출해서 응답을 본다(개발 프로젝트에서)
 
