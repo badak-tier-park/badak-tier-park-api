@@ -3,7 +3,7 @@ import { createClient } from "@supabase/supabase-js"
 import webpush from "web-push"
 import { timingSafeEqual } from "node:crypto"
 
-// notifications에 행이 들어가면 DB 트리거(notify_push)가 pg_net으로 이 함수를 부른다.
+// notifications에 행이 들어가면 DB 트리거(notify_push)가 트랜잭션당 한 번 pg_net으로 이 함수를 부른다.
 // 비밀값(웹훅 비밀값·VAPID 키)은 함수 시크릿이 아니라 DB Vault에 있고 service_role로만 읽힌다
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!
@@ -20,6 +20,29 @@ interface PushConfig {
 }
 
 let cached: PushConfig | null = null
+
+// 한 번에 가져갈 알림 수와 반복 횟수. 함수 실행 시간 안에 끝나도록 상한을 둔다 — 남은 알림은
+// DB의 매분 재시도(push-dispatch-retry)가 다시 부른다
+const CLAIM_BATCH = 200
+const MAX_ROUNDS = 5
+// 푸시 서비스로 동시에 보내는 수
+const SEND_CONCURRENCY = 20
+
+interface PendingPush {
+  id: number
+  user_id: number
+  type: string
+  title: string
+  body: string | null
+}
+
+interface Subscription {
+  id: number
+  user_id: number
+  endpoint: string
+  p256dh: string
+  auth: string
+}
 
 async function loadConfig(): Promise<PushConfig> {
   if (cached?.vapid_private) return cached
@@ -87,69 +110,73 @@ Deno.serve(async (req) => {
     return json({ error: "unauthorized" }, 401)
   }
 
-  let notificationId: number
-  try {
-    const body = await req.json()
-    notificationId = Number(body.notification_id)
-    if (!Number.isInteger(notificationId)) throw new Error("notification_id")
-  } catch {
-    return json({ error: "bad request" }, 400)
-  }
-
-  // 내용은 요청이 아니라 DB에서 읽는다 — 호출하는 쪽이 문구를 정할 수 없게
-  const { data: notif, error: notifError } = await db
-    .from("notifications")
-    .select("id, user_id, type, title, body")
-    .eq("id", notificationId)
-    .maybeSingle()
-  if (notifError) {
-    console.error("notification load failed", notifError)
-    return json({ error: "db" }, 500)
-  }
-  if (!notif) return json({ sent: 0, reason: "not found" })
-
-  const { data: subs, error: subsError } = await db
-    .from("push_subscriptions")
-    .select("id, endpoint, p256dh, auth")
-    .eq("user_id", notif.user_id)
-  if (subsError) {
-    console.error("subscriptions load failed", subsError)
-    return json({ error: "db" }, 500)
-  }
-  if (!subs?.length) return json({ sent: 0 })
-
-  const payload = JSON.stringify({
-    title: notif.title,
-    body: notif.body ?? "",
-    url: urlFor(notif.type),
-    // 같은 알림이 재시도로 두 번 와도 기기에는 하나만 남게
-    tag: `notification-${notif.id}`,
-  })
-
+  // 요청 본문은 보지 않는다. 아직 안 보낸 알림을 모두 가져가 보낸다(claim_pending_pushes가 가져가면서
+  // push_sent_at을 찍어, 호출이 겹쳐도 같은 알림을 두 번 보내지 않는다). 예전엔 알림 1건마다 호출해
+  // 전원에게 가는 알림(캘린더 53건)에서 함수 호출 한도(429)·시간 초과로 절반 넘게 유실됐다
   let sent = 0
-  const expired: number[] = []
-  await Promise.all(subs.map(async (s) => {
-    try {
-      await webpush.sendNotification(
-        { endpoint: s.endpoint, keys: { p256dh: s.p256dh, auth: s.auth } },
-        payload,
-        {
-          vapidDetails: { subject: VAPID_SUBJECT, publicKey: config.vapid_public!, privateKey: config.vapid_private! },
-          TTL: 60 * 60 * 24,
-        },
-      )
-      sent++
-    } catch (e) {
-      const status = (e as { statusCode?: number }).statusCode
-      // 404/410: 사용자가 권한을 끄거나 앱을 지워 더는 없는 구독
-      if (status === 404 || status === 410) expired.push(s.id)
-      else console.error("push send failed", status, (e as Error).message)
-    }
-  }))
+  let notifications = 0
+  const expired = new Set<number>()
 
-  if (expired.length) {
-    await db.from("push_subscriptions").delete().in("id", expired)
+  for (let round = 0; round < MAX_ROUNDS; round++) {
+    const { data: batch, error: claimError } = await db.rpc("claim_pending_pushes", { p_limit: CLAIM_BATCH })
+    if (claimError) {
+      console.error("claim failed", claimError)
+      return json({ error: "db", sent, notifications }, 500)
+    }
+    const rows = (batch ?? []) as PendingPush[]
+    if (!rows.length) break
+    notifications += rows.length
+
+    const userIds = [...new Set(rows.map((n) => n.user_id))]
+    const { data: subs, error: subsError } = await db
+      .from("push_subscriptions")
+      .select("id, user_id, endpoint, p256dh, auth")
+      .in("user_id", userIds)
+    if (subsError) {
+      console.error("subscriptions load failed", subsError)
+      return json({ error: "db", sent, notifications }, 500)
+    }
+
+    const subsByUser = new Map<number, Subscription[]>()
+    for (const s of (subs ?? []) as Subscription[]) {
+      subsByUser.set(s.user_id, [...(subsByUser.get(s.user_id) ?? []), s])
+    }
+
+    // 내용은 요청이 아니라 DB에서 읽는다 — 호출하는 쪽이 문구를 정할 수 없게
+    const jobs = rows.flatMap((n) => (subsByUser.get(n.user_id) ?? []).map((s) => ({ n, s })))
+    for (let i = 0; i < jobs.length; i += SEND_CONCURRENCY) {
+      await Promise.all(jobs.slice(i, i + SEND_CONCURRENCY).map(async ({ n, s }) => {
+        if (expired.has(s.id)) return
+        const payload = JSON.stringify({
+          title: n.title,
+          body: n.body ?? "",
+          url: urlFor(n.type),
+          // 같은 알림이 재시도로 두 번 와도 기기에는 하나만 남게
+          tag: `notification-${n.id}`,
+        })
+        try {
+          await webpush.sendNotification(
+            { endpoint: s.endpoint, keys: { p256dh: s.p256dh, auth: s.auth } },
+            payload,
+            {
+              vapidDetails: { subject: VAPID_SUBJECT, publicKey: config.vapid_public!, privateKey: config.vapid_private! },
+              TTL: 60 * 60 * 24,
+            },
+          )
+          sent++
+        } catch (e) {
+          const status = (e as { statusCode?: number }).statusCode
+          // 404/410: 사용자가 권한을 끄거나 앱을 지워 더는 없는 구독
+          if (status === 404 || status === 410) expired.add(s.id)
+          else console.error("push send failed", status, (e as Error).message)
+        }
+      }))
+    }
   }
 
-  return json({ sent, expired: expired.length })
+  if (expired.size) {
+    await db.from("push_subscriptions").delete().in("id", [...expired])
+  }
+
+  return json({ sent, notifications, expired: expired.size })
 })

@@ -9,7 +9,7 @@
 | `record-game` | gg-tracker (`/functions/v1/record-game`) | 리플레이 전적을 `games`에 기록. 가장 최근 시즌(`seasons` 최대 id)에 붙인다 |
 | `get-games` | gg-tracker 대시보드 | 전적 조회 |
 | `notify-entry` | badak-web 엔트리 제출(`src/lib/notifications.ts`) | 디스코드 웹훅으로 알림. 실패해도 웹은 사용자에게 알리지 않는다 |
-| `send-push` | DB 트리거 `notify_push`(`notifications` insert 시 `pg_net`) | 웹 푸시 발송. JWT 대신 `x-push-secret`으로 인증(`verify_jwt = false`). 알림 내용은 요청이 아니라 DB에서 읽는다 |
+| `send-push` | DB 트리거 `notify_push`(`notifications` insert 시 **트랜잭션당 1번** `pg_net`) + 매분 재시도 cron | 웹 푸시 발송. JWT 대신 `x-push-secret`으로 인증(`verify_jwt = false`). 요청 본문은 보지 않고 안 보낸 알림을 `claim_pending_pushes()`로 모두 가져가 보낸다(알림 1건마다 호출하면 전원 알림에서 429·시간 초과로 유실됐다) |
 
 - **요청·응답 형식을 바꾸면 호출하는 쪽이 같이 바뀌어야 한다.** gg-tracker는 사용자가 받아 둔 실행 파일이라
   옛 버전이 계속 호출한다 — 필드를 빼거나 이름을 바꾸지 말고 추가만 하거나, 옛 형식도 받게 둔다
