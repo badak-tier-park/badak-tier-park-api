@@ -78,6 +78,8 @@ function sameSecret(given: string | null, expected: string | null): boolean {
 // 알림을 눌렀을 때 열 화면
 function urlFor(type: string): string {
   if (type.startsWith("prediction_")) return "/participate?tab=predictions"
+  // 엔트리 미제출 알림(entry_), 팀 투표 알림(team_poll_) → 리그참여. 웹 notificationPath()와 같은 규칙
+  if (type.startsWith("entry_") || type.startsWith("team_poll_")) return "/participate"
   return "/"
 }
 
